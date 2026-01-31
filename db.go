@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func InitSchema(dbFileName string, dbConn *sqlx.DB, tableSchemas map[string]string, allExpectedColumns map[string]map[string]string, dbExists bool) {
+func InitSchema(dbFileName string, dbConn *sqlx.DB, tableSchemas map[string]string, allExpectedColumns map[string]map[string]string, dbExists bool) error {
 	var err error
 
 	for tableName, schema := range tableSchemas {
@@ -19,7 +19,7 @@ func InitSchema(dbFileName string, dbConn *sqlx.DB, tableSchemas map[string]stri
 			log.Debug().Msgf("INIT: DB - Creating table '%s'...", tableName)
 			_, err = dbConn.Exec(schema)
 			if err != nil {
-				log.Fatal().Err(err).Msgf("Error creating table '%s'", tableName)
+				return fmt.Errorf("error creating table '%s': %w", tableName, err)
 			}
 
 			log.Debug().Msgf("INIT: DB - Table '%s' created successfully!", tableName)
@@ -31,30 +31,30 @@ func InitSchema(dbFileName string, dbConn *sqlx.DB, tableSchemas map[string]stri
 				continue
 			}
 			if err := validateSchema(dbConn, tableName, expectedCols); err != nil {
-				log.Fatal().Err(err).Msgf("Schema validation failed for table '%s'", tableName)
+				return fmt.Errorf("schema validation failed for table '%s': %w", tableName, err)
 			}
 
 			log.Debug().Msgf("INIT: DB - Schema for table '%s' validated successfully.", tableName)
 		}
 	}
 	log.Debug().Msg("INIT: DB - All tables processed successfully.")
+	return nil
 }
 
-func IsDBExists(dbFileName string) bool {
-	dbExists := true
+func IsDBExists(dbFileName string) (bool, error) {
 	if _, err := os.Stat(dbFileName); os.IsNotExist(err) {
-		dbExists = false
 		log.Debug().Msgf("INIT: DB - Database file '%s' not found. It will be created.", dbFileName)
+		return false, nil
 	} else if err != nil {
-		log.Fatal().Err(err).Msg("Error checking database file status")
+		return false, fmt.Errorf("error checking database file status: %w", err)
 	}
-	return dbExists
+	return true, nil
 }
 
-func InitDB(dbFileName string) *sqlx.DB {
+func InitDB(dbFileName string) (*sqlx.DB, error) {
 	db, err := sqlx.Connect("sqlite3", dbFileName)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Error opening database connection")
+		return nil, fmt.Errorf("error opening database connection: %w", err)
 	}
 
 	db.SetMaxOpenConns(5)
@@ -62,7 +62,7 @@ func InitDB(dbFileName string) *sqlx.DB {
 	db.SetConnMaxLifetime(5 * time.Minute)
 	db.SetConnMaxIdleTime(1 * time.Minute)
 
-	return db
+	return db, nil
 }
 
 func validateSchema(db *sqlx.DB, tableName string, expectedColumns map[string]string) error {
