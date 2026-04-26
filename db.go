@@ -1,137 +1,178 @@
 package sqlite_base
 
 import (
-	"database/sql"
+	"errors"
 	"fmt"
 	"os"
-	"time"
+	"path/filepath"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/rs/zerolog/log"
+	"github.com/pressly/goose/v3"
 )
 
-func InitSchema(dbFileName string, dbConn *sqlx.DB, tableSchemas map[string]string, allExpectedColumns map[string]map[string]string, dbExists bool) error {
-	var err error
+type TableDefinition struct {
+	Name      string
+	CreateSQL string
+}
 
-	for tableName, schema := range tableSchemas {
-		if !dbExists { // Database file did not exist, so create the table
-			log.Debug().Msgf("INIT: DB - Creating table '%s'...", tableName)
-			_, err = dbConn.Exec(schema)
-			if err != nil {
-				return fmt.Errorf("error creating table '%s': %w", tableName, err)
-			}
+type Config struct {
+	Path         string
+	MigrationDir string
+	Tables       []TableDefinition
+}
 
-			log.Debug().Msgf("INIT: DB - Table '%s' created successfully!", tableName)
-		} else { // Database file existed, validate its schema
-			log.Debug().Msgf("INIT: DB - Database file '%s' found. Validating schema for table '%s'...", dbFileName, tableName)
-			expectedCols, ok := allExpectedColumns[tableName]
-			if !ok {
-				log.Warn().Msgf("No expected column definitions for table '%s'. Skipping schema validation for this table.", tableName)
-				continue
-			}
-			if err := validateSchema(dbConn, tableName, expectedCols); err != nil {
-				return fmt.Errorf("schema validation failed for table '%s': %w", tableName, err)
-			}
+func Open(config Config) (*sqlx.DB, error) {
+	if strings.TrimSpace(config.Path) == "" {
+		return nil, errors.New("path is required")
+	}
 
-			log.Debug().Msgf("INIT: DB - Schema for table '%s' validated successfully.", tableName)
+	if err := validateDatabaseParentDir(config.Path); err != nil {
+		return nil, err
+	}
+
+	wasExisting, err := databaseExists(config.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	db, err := sqlx.Open("sqlite3", config.Path)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite database: %w", err)
+	}
+
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite database: %w", err)
+	}
+
+	if !wasExisting {
+		if err := createTables(db, config.Tables); err != nil {
+			_ = db.Close()
+			return nil, err
 		}
 	}
-	log.Debug().Msg("INIT: DB - All tables processed successfully.")
-	return nil
-}
 
-func IsDBExists(dbFileName string) (bool, error) {
-	if _, err := os.Stat(dbFileName); os.IsNotExist(err) {
-		log.Debug().Msgf("INIT: DB - Database file '%s' not found. It will be created.", dbFileName)
-		return false, nil
-	} else if err != nil {
-		return false, fmt.Errorf("error checking database file status: %w", err)
+	if err := ApplyMigrations(db, config.MigrationDir); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
-	return true, nil
-}
-
-func InitDB(dbFileName string) (*sqlx.DB, error) {
-	db, err := sqlx.Connect("sqlite3", dbFileName)
-	if err != nil {
-		return nil, fmt.Errorf("error opening database connection: %w", err)
-	}
-
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	db.SetConnMaxIdleTime(1 * time.Minute)
 
 	return db, nil
 }
 
-func validateSchema(db *sqlx.DB, tableName string, expectedColumns map[string]string) error {
-	exists, err := tableExists(db, tableName)
+func createTables(db *sqlx.DB, tables []TableDefinition) error {
+	if len(tables) == 0 {
+		return nil
+	}
+
+	tx, err := db.Beginx()
 	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("table '%s' does not exist in the database", tableName)
+		return fmt.Errorf("begin table creation transaction: %w", err)
 	}
 
-	// Query table info using PRAGMA to get column details
-	rows, err := db.Queryx(fmt.Sprintf("PRAGMA table_info(%s);", tableName))
-	if err != nil {
-		return fmt.Errorf("error querying table info for '%s': %w", tableName, err)
-	}
-	defer func(rows *sqlx.Rows) {
-		err = rows.Close()
-		if err != nil {
-			log.Error().Err(err).Msgf("Error closing rows for table '%s'", tableName)
+	for _, table := range tables {
+		if strings.TrimSpace(table.CreateSQL) == "" {
+			_ = tx.Rollback()
+			return fmt.Errorf("create SQL is required for table %q", table.Name)
 		}
-	}(rows)
 
-	// Map to store found columns and their types
-	foundColumns := make(map[string]string)
-	for rows.Next() {
-		var (
-			cid        int
-			name       string
-			columnType string // column type (e.g., TEXT, INTEGER)
-			notnull    int
-			dfltValue  sql.NullString // Default value, can be NULL
-			pk         int            // Primary key flag
-		)
-		// Scan the results from PRAGMA table_info
-		if err = rows.Scan(&cid, &name, &columnType, &notnull, &dfltValue, &pk); err != nil {
-			return fmt.Errorf("error scanning table info row: %w", err)
-		}
-		foundColumns[name] = columnType
-	}
-
-	// Validate each expected column against the found columns
-	for colName, expectedType := range expectedColumns {
-		foundType, ok := foundColumns[colName]
-		if !ok {
-			return fmt.Errorf("missing expected column: '%s'", colName)
-		}
-		// For simplicity, we'll check for an exact type match.
-		// SQLite's type affinity can sometimes return slightly different names
-		// (e.g., VARCHAR instead of TEXT), but for basic types, this is usually sufficient.
-		if foundType != expectedType {
-			return fmt.Errorf("column '%s' has unexpected type: expected '%s', got '%s'", colName, expectedType, foundType)
+		if _, err := tx.Exec(table.CreateSQL); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("create table %q: %w", table.Name, err)
 		}
 	}
 
-	// Optionally, you might want to check for extra columns not in expectedColumns,
-	// but for now, we only ensure all expected columns are present and correct.
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit table creation transaction: %w", err)
+	}
 
-	return nil // Schema is valid
+	return nil
 }
 
-func tableExists(db *sqlx.DB, tableName string) (bool, error) {
-	var count int
-
-	// Query sqlite_master to check for the table's existence
-	query := `SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`
-	err := db.Get(&count, query, tableName)
-	if err != nil {
-		return false, fmt.Errorf("error checking if table '%s' exists: %w", tableName, err)
+func ApplyMigrations(db *sqlx.DB, migrationDir string) error {
+	if strings.TrimSpace(migrationDir) == "" {
+		return nil
 	}
-	return count > 0, nil
+
+	info, err := os.Stat(migrationDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat migration dir: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("migration path is not a directory: %s", migrationDir)
+	}
+
+	entries, err := os.ReadDir(migrationDir)
+	if err != nil {
+		return fmt.Errorf("read migration dir: %w", err)
+	}
+
+	hasSQL := false
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".sql") {
+			hasSQL = true
+			break
+		}
+	}
+	if !hasSQL {
+		return nil
+	}
+
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("set goose dialect: %w", err)
+	}
+
+	if err := goose.Up(db.DB, migrationDir); err != nil {
+		return fmt.Errorf("apply migrations: %w", err)
+	}
+
+	return nil
+}
+
+func databaseExists(path string) (bool, error) {
+	if path == ":memory:" || strings.HasPrefix(path, "file::memory:") {
+		return false, nil
+	}
+
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("stat database path: %w", err)
+}
+
+func validateDatabaseParentDir(path string) error {
+	if path == ":memory:" || strings.HasPrefix(path, "file::memory:") {
+		return nil
+	}
+
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "" {
+		return nil
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("database directory does not exist: %s", dir)
+		}
+		return fmt.Errorf("stat database directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("database parent path is not a directory: %s", dir)
+	}
+
+	return nil
 }
