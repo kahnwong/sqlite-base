@@ -2,3 +2,4 @@ sqlite-base
 
 # examples
 demo.db
+demo_embedfs.db

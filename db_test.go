@@ -1,12 +1,16 @@
 package sqlite_base
 
 import (
+	"embed"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/jmoiron/sqlx"
 )
+
+//go:embed examples/migrations/*.sql
+var embedMigrations embed.FS
 
 func TestOpen_RequiresPath(t *testing.T) {
 	t.Parallel()
@@ -52,6 +56,24 @@ func TestOpen_AppliesMigrations(t *testing.T) {
 	}
 }
 
+func TestOpen_AppliesEmbeddedMigrations(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "app.sqlite")
+
+	db, err := Open(Config{
+		Path:         dbPath,
+		MigrationDir: "examples/migrations",
+		MigrationFS:  embedMigrations,
+	})
+	if err != nil {
+		t.Fatalf("open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if _, err := db.Exec("INSERT INTO users (name, email, role, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", "alice", "alice@example.com", "member"); err != nil {
+		t.Fatalf("insert failed, embedded migration not applied: %v", err)
+	}
+}
+
 func TestApplyMigrations_AppliesSQLFiles(t *testing.T) {
 	t.Parallel()
 
@@ -71,6 +93,19 @@ func TestApplyMigrations_AppliesSQLFiles(t *testing.T) {
 
 	if _, err := db.Exec("INSERT INTO widgets (name) VALUES (?)", "w1"); err != nil {
 		t.Fatalf("insert failed, migration not applied: %v", err)
+	}
+}
+
+func TestApplyMigrationsFS_AppliesSQLFiles(t *testing.T) {
+	db := sqlx.MustOpen("sqlite3", ":memory:")
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := ApplyMigrationsFS(db, embedMigrations, "examples/migrations"); err != nil {
+		t.Fatalf("apply embedded migrations failed: %v", err)
+	}
+
+	if _, err := db.Exec("INSERT INTO users (name, email, role, created_at, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", "alice", "alice@example.com", "member"); err != nil {
+		t.Fatalf("insert failed, embedded migration not applied: %v", err)
 	}
 }
 
@@ -102,6 +137,25 @@ func TestApplyMigrations_EmptyOrMissingNoOp(t *testing.T) {
 
 	missing := filepath.Join(t.TempDir(), "missing")
 	if err := ApplyMigrations(db, missing); err != nil {
+		t.Fatalf("missing migration dir should be noop: %v", err)
+	}
+}
+
+func TestApplyMigrationsFS_EmptyOrMissingNoOp(t *testing.T) {
+	t.Parallel()
+
+	db := sqlx.MustOpen("sqlite3", ":memory:")
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := ApplyMigrationsFS(db, nil, "examples/migrations"); err != nil {
+		t.Fatalf("nil migration fs should be noop: %v", err)
+	}
+
+	if err := ApplyMigrationsFS(db, embedMigrations, ""); err != nil {
+		t.Fatalf("empty migration dir should be noop: %v", err)
+	}
+
+	if err := ApplyMigrationsFS(db, embedMigrations, "testdata/missing"); err != nil {
 		t.Fatalf("missing migration dir should be noop: %v", err)
 	}
 }

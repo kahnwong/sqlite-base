@@ -3,8 +3,10 @@ package sqlite_base
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
@@ -14,7 +16,10 @@ import (
 type Config struct {
 	Path         string
 	MigrationDir string
+	MigrationFS  fs.FS
 }
+
+var gooseMu sync.Mutex
 
 func Open(config Config) (*sqlx.DB, error) {
 	if strings.TrimSpace(config.Path) == "" {
@@ -31,7 +36,12 @@ func Open(config Config) (*sqlx.DB, error) {
 		return nil, fmt.Errorf("ping sqlite database: %w", err)
 	}
 
-	if err := ApplyMigrations(db, config.MigrationDir); err != nil {
+	if config.MigrationFS != nil {
+		err = ApplyMigrationsFS(db, config.MigrationFS, config.MigrationDir)
+	} else {
+		err = ApplyMigrations(db, config.MigrationDir)
+	}
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -74,13 +84,57 @@ func ApplyMigrations(db *sqlx.DB, migrationDir string) error {
 		return nil
 	}
 
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return fmt.Errorf("set goose dialect: %w", err)
-	}
-
-	if err := goose.Up(db.DB, migrationDir); err != nil {
+	if err := runGooseUp(db, nil, migrationDir); err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
 
 	return nil
+}
+
+func ApplyMigrationsFS(db *sqlx.DB, migrationFS fs.FS, migrationDir string) error {
+	if migrationFS == nil || strings.TrimSpace(migrationDir) == "" {
+		return nil
+	}
+
+	entries, err := fs.ReadDir(migrationFS, migrationDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read migration fs dir: %w", err)
+	}
+
+	hasSQL := false
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".sql") {
+			hasSQL = true
+			break
+		}
+	}
+	if !hasSQL {
+		return nil
+	}
+
+	if err := runGooseUp(db, migrationFS, migrationDir); err != nil {
+		return fmt.Errorf("apply migrations: %w", err)
+	}
+
+	return nil
+}
+
+func runGooseUp(db *sqlx.DB, migrationFS fs.FS, migrationDir string) error {
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
+
+	goose.SetBaseFS(migrationFS)
+	defer goose.SetBaseFS(nil)
+
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("set goose dialect: %w", err)
+	}
+
+	return goose.Up(db.DB, migrationDir)
 }
