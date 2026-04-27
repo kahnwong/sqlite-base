@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -103,5 +104,26 @@ func TestApplyMigrations_EmptyOrMissingNoOp(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	if err := ApplyMigrations(db, missing); err != nil {
 		t.Fatalf("missing migration dir should be noop: %v", err)
+	}
+}
+
+func TestApplyMigrationsFS_AppliesSQLFiles(t *testing.T) {
+	t.Parallel()
+
+	db := sqlx.MustOpen("sqlite3", ":memory:")
+	t.Cleanup(func() { _ = db.Close() })
+
+	fsys := fstest.MapFS{
+		"migrations/00001_create_accounts.sql": &fstest.MapFile{
+			Data: []byte("-- +goose Up\nCREATE TABLE accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL);\n-- +goose Down\nDROP TABLE accounts;\n"),
+		},
+	}
+
+	if err := ApplyMigrationsFS(db, fsys, "migrations"); err != nil {
+		t.Fatalf("apply migrations failed: %v", err)
+	}
+
+	if _, err := db.Exec("INSERT INTO accounts (name) VALUES (?)", "bob"); err != nil {
+		t.Fatalf("insert failed, migration not applied: %v", err)
 	}
 }
