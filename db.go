@@ -1,6 +1,7 @@
 package sqlite_base
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -8,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jmoiron/sqlx"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pressly/goose/v3"
 )
@@ -21,12 +21,12 @@ type Config struct {
 
 var gooseMu sync.Mutex
 
-func Open(config Config) (*sqlx.DB, error) {
+func Open(config Config) (*sql.DB, error) {
 	if strings.TrimSpace(config.Path) == "" {
 		return nil, errors.New("path is required")
 	}
 
-	db, err := sqlx.Open("sqlite3", config.Path)
+	db, err := sql.Open("sqlite3", config.Path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
@@ -49,7 +49,7 @@ func Open(config Config) (*sqlx.DB, error) {
 	return db, nil
 }
 
-func ApplyMigrations(db *sqlx.DB, migrationDir string) error {
+func ApplyMigrations(db *sql.DB, migrationDir string) error {
 	if strings.TrimSpace(migrationDir) == "" {
 		return nil
 	}
@@ -91,7 +91,7 @@ func ApplyMigrations(db *sqlx.DB, migrationDir string) error {
 	return nil
 }
 
-func ApplyMigrationsFS(db *sqlx.DB, migrationFS fs.FS, migrationDir string) error {
+func ApplyMigrationsFS(db *sql.DB, migrationFS fs.FS, migrationDir string) error {
 	if migrationFS == nil || strings.TrimSpace(migrationDir) == "" {
 		return nil
 	}
@@ -125,7 +125,7 @@ func ApplyMigrationsFS(db *sqlx.DB, migrationFS fs.FS, migrationDir string) erro
 	return nil
 }
 
-func runGooseUp(db *sqlx.DB, migrationFS fs.FS, migrationDir string) error {
+func runGooseUp(db *sql.DB, migrationFS fs.FS, migrationDir string) error {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
 
@@ -136,5 +136,5 @@ func runGooseUp(db *sqlx.DB, migrationFS fs.FS, migrationDir string) error {
 		return fmt.Errorf("set goose dialect: %w", err)
 	}
 
-	return goose.Up(db.DB, migrationDir)
+	return goose.Up(db, migrationDir)
 }

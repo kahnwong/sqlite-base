@@ -1,12 +1,11 @@
 package sqlite_base
 
 import (
+	"database/sql"
 	"embed"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/jmoiron/sqlx"
 )
 
 //go:embed examples/migrations/*.sql
@@ -77,7 +76,7 @@ func TestOpen_AppliesEmbeddedMigrations(t *testing.T) {
 func TestApplyMigrations_AppliesSQLFiles(t *testing.T) {
 	t.Parallel()
 
-	db := sqlx.MustOpen("sqlite3", ":memory:")
+	db := openTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
 	migrationDir := t.TempDir()
@@ -97,7 +96,7 @@ func TestApplyMigrations_AppliesSQLFiles(t *testing.T) {
 }
 
 func TestApplyMigrationsFS_AppliesSQLFiles(t *testing.T) {
-	db := sqlx.MustOpen("sqlite3", ":memory:")
+	db := openTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
 	if err := ApplyMigrationsFS(db, embedMigrations, "examples/migrations"); err != nil {
@@ -112,7 +111,7 @@ func TestApplyMigrationsFS_AppliesSQLFiles(t *testing.T) {
 func TestApplyMigrations_NonDirectoryPath(t *testing.T) {
 	t.Parallel()
 
-	db := sqlx.MustOpen("sqlite3", ":memory:")
+	db := openTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
 	f := filepath.Join(t.TempDir(), "not-a-dir")
@@ -128,7 +127,7 @@ func TestApplyMigrations_NonDirectoryPath(t *testing.T) {
 func TestApplyMigrations_EmptyOrMissingNoOp(t *testing.T) {
 	t.Parallel()
 
-	db := sqlx.MustOpen("sqlite3", ":memory:")
+	db := openTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
 	if err := ApplyMigrations(db, ""); err != nil {
@@ -144,7 +143,7 @@ func TestApplyMigrations_EmptyOrMissingNoOp(t *testing.T) {
 func TestApplyMigrationsFS_EmptyOrMissingNoOp(t *testing.T) {
 	t.Parallel()
 
-	db := sqlx.MustOpen("sqlite3", ":memory:")
+	db := openTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
 	if err := ApplyMigrationsFS(db, nil, "examples/migrations"); err != nil {
@@ -158,4 +157,15 @@ func TestApplyMigrationsFS_EmptyOrMissingNoOp(t *testing.T) {
 	if err := ApplyMigrationsFS(db, embedMigrations, "testdata/missing"); err != nil {
 		t.Fatalf("missing migration dir should be noop: %v", err)
 	}
+}
+
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open test db failed: %v", err)
+	}
+
+	return db
 }

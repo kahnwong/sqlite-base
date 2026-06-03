@@ -3,13 +3,14 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"log"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	sqlitebase "github.com/kahnwong/sqlite-base"
+	"github.com/kahnwong/sqlite-base/examples/store"
 )
 
 // This file lives in examples, so this embeds examples/migrations/*.sql.
@@ -28,11 +29,14 @@ func main() {
 	}
 	defer db.Close()
 
-	if err := createUser(db); err != nil {
+	ctx := context.Background()
+	queries := store.New(db)
+
+	if err := createUser(ctx, queries); err != nil {
 		log.Fatalf("create user: %v", err)
 	}
 
-	total, err := userCount(db)
+	total, err := queries.CountUsers(ctx)
 	if err != nil {
 		log.Fatalf("count users: %v", err)
 	}
@@ -40,18 +44,10 @@ func main() {
 	fmt.Printf("database ready with embedded migrations, users total: %d\n", total)
 }
 
-func createUser(db *sqlx.DB) error {
-	_, err := db.Exec(`
-INSERT INTO users(name, email, role, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)
-`, "Alice", fmt.Sprintf("alice+%d@example.com", time.Now().UnixNano()), "member", time.Now().UTC(), time.Now().UTC())
-
-	return err
-}
-
-func userCount(db *sqlx.DB) (int, error) {
-	var count int
-	err := db.Get(&count, `SELECT COUNT(1) FROM users`)
-
-	return count, err
+func createUser(ctx context.Context, queries *store.Queries) error {
+	return queries.CreateUser(ctx, store.CreateUserParams{
+		Name:  "Alice",
+		Email: fmt.Sprintf("alice+%d@example.com", time.Now().UnixNano()),
+		Role:  "member",
+	})
 }
