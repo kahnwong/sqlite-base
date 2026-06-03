@@ -25,4 +25,3 @@ repos:
       - id: go-vet
       - id: golangci-lint
       - id: yamlfmt
-      - id: kingfisher
