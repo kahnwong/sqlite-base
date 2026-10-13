@@ -1,14 +1,20 @@
 # Examples
 
+## Init
+
+```bash
+go get -tool github.com/sqlc-dev/sqlc/cmd/sqlc
+```
+
 ## Usage
 
-After changing `db/schema.sql` or `db/queries.sql`:
+After changing `sql/schema.sql` or `sql/queries.sql`:
 
 ```bash
 go tool sqlc generate -f sqlc.yaml
 ```
 
-Output is in `store`.
+Output is in `db`.
 
 Then create goose migration file by hand.
 

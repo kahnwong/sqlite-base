@@ -10,7 +10,7 @@ import (
 	"time"
 
 	sqlitebase "github.com/kahnwong/sqlite-base"
-	"github.com/kahnwong/sqlite-base/examples/store"
+	"github.com/kahnwong/sqlite-base/examples/db"
 )
 
 // This file lives in examples, so this embeds examples/migrations/*.sql.
@@ -19,7 +19,7 @@ import (
 var migrationFiles embed.FS
 
 func main() {
-	db, err := sqlitebase.Open(sqlitebase.Config{
+	database, err := sqlitebase.Open(sqlitebase.Config{
 		Path:         "demo_embedfs.db",
 		MigrationDir: "migrations",
 		MigrationFS:  migrationFiles,
@@ -27,10 +27,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("open sqlite database: %v", err)
 	}
-	defer db.Close()
+	defer database.Close()
 
 	ctx := context.Background()
-	queries := store.New(db)
+	queries := db.New(database)
 
 	if err := createUser(ctx, queries); err != nil {
 		log.Fatalf("create user: %v", err)
@@ -44,8 +44,8 @@ func main() {
 	fmt.Printf("database ready with embedded migrations, users total: %d\n", total)
 }
 
-func createUser(ctx context.Context, queries *store.Queries) error {
-	return queries.CreateUser(ctx, store.CreateUserParams{
+func createUser(ctx context.Context, queries *db.Queries) error {
+	return queries.CreateUser(ctx, db.CreateUserParams{
 		Name:  "Alice",
 		Email: fmt.Sprintf("alice+%d@example.com", time.Now().UnixNano()),
 		Role:  "member",
